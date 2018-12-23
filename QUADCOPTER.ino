@@ -5,12 +5,12 @@
 #define refresh 2500   //2.5ms Cycle duration (400Hz refresh rate)
 #define MaxPIDpitchOUT 200
 #define MaxPIDrollOUT 200
-#define MaxPIDyawOUT 200
+#define MaxPIDyawOUT 100
 
-#define BR 11110111   //3
-#define FR 11101111   //4
-#define FL 11011111   //5
-#define BL 10111111   //6
+#define BR B11110111   //3
+#define FR B11101111   //4
+#define FL B11011111   //5
+#define BL B10111111   //6
 #define ALL_HIGH B01111000 //Pulling 3,4,5,6 high 
 #define ALL_LOW B10000111  //Pulling 3,4,5,6 low
 
@@ -29,9 +29,7 @@
   #define kiR 0.03
   #define kdR 1.5
 
-  #define kpY 1
-  #define kiY 0
-  #define kdY 0
+  #define kpY 10
 /////////////////////
 
 /*
@@ -68,8 +66,7 @@ bool Start=false;
 unsigned long int runtime=0;
 unsigned long int lastTX=0;
 
-void setup()
-{
+void setup(){
   
   PCICR |= (1 << PCIE0);    // set PCIE0 to enable PCMSK0 scan
   PCMSK0 |= (1 << PCINT0);  // set PCINT0 (digital input 8) to trigger an interrupt on state change
@@ -94,8 +91,8 @@ void setup()
   //Serial.begin(115200);///////////////////////////////////
 }
 
-void loop()
-{
+void loop(){
+  
   while(!(c&&Start))       //If MPU does not connect put throttle to 0%
   {                        //Wait for the arming sequence
     accelgyro.testConnection()? c=1 : c=0; 
@@ -103,12 +100,17 @@ void loop()
     PORTD |= ALL_HIGH;
     delayMicroseconds(1000);  //0% throttle
     PORTD &= ALL_LOW;
+    delayMicroseconds(1000);
   }
 
   runtime=micros();
 
-  getYPR();
+  readMPU();
 
+///////PART OF ESC PULSE//////////////  
+ // long tut=micros();  
+  getYPR();
+  
   if(throttle<1050)
     throttle=1000;
   else if(throttle>1800)
@@ -120,12 +122,17 @@ void loop()
   {
     PIDpitch();
     PIDroll();  
-    //PIDyaw();
-  }
-  
+    PIDyaw();
+  }//~450us
+
+ // tut=micros()-tut;
+ // Serial.println(tut);
+/////////////////////////////////////////
+
+
   ////Send updated pulses to ESCs///
   motorWrite();     
-  
+ 
   
 
   if((millis()-lastTX)>1000)
@@ -148,8 +155,7 @@ void loop()
   while((micros()-runtime)<refresh);
 }
 
-ISR(PCINT0_vect)
-{         //READING PWM SIGNALS FROM THE RECIEVER
+ISR(PCINT0_vect){         //READING PWM SIGNALS FROM THE RECIEVER
  
   //Channel 1=========================================
   if(last_channel_1 == 0 && PINB & B00000001 ){         //Input 8 changed from 0 to 1
@@ -203,8 +209,8 @@ ISR(PCINT0_vect)
   lastTX=millis();
 }
 
-inline void PIDpitch()
-{
+inline void PIDpitch(){
+  
   if(pitch>1450 && pitch<1550)
     pSetpoint=0;
   else
@@ -233,8 +239,7 @@ inline void PIDpitch()
   velBL-=Out;   
 }
 
-inline void PIDroll()
-{
+inline void PIDroll(){
 
   if(roll>1450 && roll<1550)
     rSetpoint=0;
@@ -265,20 +270,14 @@ inline void PIDroll()
   
 }
 
-inline void PIDyaw()
-{
+inline void PIDyaw(){
 
   if(yaw>1450 && yaw<1550)
-    rSetpoint=0;
+    ySetpoint=0;
   else
     ySetpoint = map(yaw, 1000,2000, -5.00,5.00);
   
-  double err = y - rSetpoint;
-  double d_err = err - r_l_err;
-  r_i_err += err;
-  r_l_err = err;
-
-  double Out = kpY*err + kdY*d_err + kiY*r_i_err;
+  double Out = kpY*(y - rSetpoint);
   
   if(Out>MaxPIDyawOUT)
     Out=MaxPIDyawOUT;
@@ -297,8 +296,8 @@ inline void PIDyaw()
   
 }
 
-inline void motorWrite()
-{
+inline void motorWrite(){
+  
   if(velBR>2000)
     velBR=2000;
   else if(velBR<1000)
@@ -338,32 +337,15 @@ inline void motorWrite()
 ///////////ESC PULSE ENDS/////////////////////
 }
 
-inline float aSin(float a)  //Optimised sine inverse
-{         
+inline float aSin(float a){  //Optimised sine inverse
+         
   return a*(1+(0.5*a*a));
 }
 
-inline void getYPR()
-{         //GET yaw pitch roll
- 
-  //////EXTRACTION AND PROCESSING OF ACCEL-GYRO DATA BEGINS///////
-      
+inline void getYPR(){         //GET yaw pitch roll
+        
     //accelgyro.getMotion6(&rawAG[0][0], &rawAG[1][0], &rawAG[2][0], &rawAG[0][1], &rawAG[1][1], &rawAG[2][1]);   
-                  
-    readMPU();
-  
-    for(int i=0; i<=2; i++)
-    {
-      rawAG[i][0] -= offsets[i][0];
-      rawAG[i][0] = 0.7*rawAG[i][0] + 0.3*lastAG[i][0];
-      lastAG[i][0] = rawAG[i][0];
 
-      rawAG[i][1] -= offsets[i][1];
-      rawAG[i][1] = 0.7*rawAG[i][1] + 0.3*lastAG[i][1];
-      lastAG[i][1] = rawAG[i][1];
-    }
-    
-    
   //////////COMPLEMENTARY FILTERING TO GET YPR/////////
   p = (1-k)*( p - dt*(rawAG[1][1]*0.007634));      //(1/131) = 0.007634
      if(abs(rawAG[0][0])<=16384.0)
@@ -380,6 +362,7 @@ inline void getYPR()
   Serial.print(p);
   Serial.print("\t | r: ");
   Serial.println(r); */
+  
 }
 
 /*inline void esc(int pin, int us)  //old esc function
@@ -389,8 +372,8 @@ inline void getYPR()
   PORTD &= ~(1<<pin);   //digitalWrite(pin,0);
 }*/
 
-inline void readMPU()
-{
+inline void readMPU(){
+  
   Wire.beginTransmission(0x68);  //begin transmission with the gyro
   Wire.write(0x3B); //start reading from high byte register for accel
   Wire.endTransmission();
@@ -405,10 +388,21 @@ inline void readMPU()
   rawAG[0][1]=Wire.read()<<8|Wire.read();  
   rawAG[1][1]=Wire.read()<<8|Wire.read();
   rawAG[2][1]=Wire.read()<<8|Wire.read();
-}   //291us
+  
+  for(int i=0; i<=2; i++)
+  {
+      rawAG[i][0] -= offsets[i][0];
+      rawAG[i][0] = 0.7*rawAG[i][0] + 0.3*lastAG[i][0];
+      lastAG[i][0] = rawAG[i][0];
 
-void setupMPU()
-{
+      rawAG[i][1] -= offsets[i][1];
+      rawAG[i][1] = 0.7*rawAG[i][1] + 0.3*lastAG[i][1];
+      lastAG[i][1] = rawAG[i][1];
+  }//~360us
+}
+
+void setupMPU(){
+  
   ////////MPU INITITALIZE/////////////
   Wire.setClock(800000);
   Wire.begin();
@@ -438,4 +432,3 @@ void setupMPU()
        offsets[i][j]/=SAMPLE;
   //////////////ENDS/////////////////
 }
-
